@@ -1,7 +1,5 @@
-# streamlit_app.py
 from __future__ import annotations
 
-import io
 import json
 from datetime import datetime
 from typing import List, Tuple
@@ -20,30 +18,37 @@ from src.evm_guard.features import (
 from src.evm_guard.targets import add_targets
 from src.evm_guard.model import train_models
 
-# Explainability helpers (tree-focused SHAP + permutation importance)
+# Explainability helpers
 from src.evm_guard.explain import (
     global_permutation_importance,
     try_shap_global_tree,
     try_shap_local_row,
 )
 
+
 # -------------------------
-# Helper: create a clean, shareable report (Markdown)
+# Helper: create report
 # -------------------------
-def build_markdown_report(df_filtered: pd.DataFrame, models, feature_cols: List[str], pv_range: tuple[float, float]) -> str:
+def build_markdown_report(
+    df_filtered: pd.DataFrame,
+    models,
+    feature_cols: List[str],
+    pv_range: tuple[float, float],
+) -> str:
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    n_projects = int(df_filtered["ProjectID"].nunique())
+    n_projects = int(df_filtered["ProjectID"].nunique()) if "ProjectID" in df_filtered.columns else 0
     n_rows = int(len(df_filtered))
 
-    # small, readable distribution
-    label_counts = df_filtered.get("y_risk_level", pd.Series(dtype=object)).value_counts(dropna=False).to_dict()
+    label_counts = (
+        df_filtered.get("y_risk_level", pd.Series(dtype=object))
+        .value_counts(dropna=False)
+        .to_dict()
+    )
 
-    # model selection
     sel = models.metrics.get("selected_models", {})
     clf_name = sel.get("classifier", "N/A")
     reg_name = sel.get("regressor", "N/A")
 
-    # include key numeric metrics for selected models (if CV ran)
     clf_block = models.metrics.get("classifier", {}).get(clf_name, {})
     reg_block = models.metrics.get("regressor", {}).get(reg_name, {})
 
@@ -55,17 +60,18 @@ def build_markdown_report(df_filtered: pd.DataFrame, models, feature_cols: List[
             cur = cur[p]
         return cur
 
-    clf_macro_f1 = _safe_get(clf_block, ["classification_report", "macro avg", "f1-score"], default="N/A")
+    clf_macro_f1 = _safe_get(
+        clf_block, ["classification_report", "macro avg", "f1-score"], default="N/A"
+    )
     clf_acc = _safe_get(clf_block, ["classification_report", "accuracy"], default="N/A")
     clf_auc = clf_block.get("auc_macro_ovr", None)
 
     rmse = reg_block.get("rmse_cost_overrun_ratio", "N/A")
     mae = reg_block.get("mae_cost_overrun_ratio", "N/A")
 
-    # convert ratio errors to “percentage points”
     def _pp(x):
         try:
-            return f"{float(x)*100:.2f} pp of BAC"
+            return f"{float(x) * 100:.2f} pp of BAC"
         except Exception:
             return "N/A"
 
@@ -113,49 +119,58 @@ Global permutation importance and SHAP are provided (when compatible) to identif
 - If a PV/BAC filter leaves too few projects (e.g., 1 project), **GroupKFold cannot run**. The app will mark CV as “skipped” and still train models on all rows to keep the UI working.
 - AUC can appear as `null` when a fold lacks one or more classes (one-vs-rest AUC not computable).
 - With very small samples, permutation importance for the classifier may show near-zero values because model performance is unstable.
-
 """
-    return md
+    return md.strip()
 
 
 # -------------------------
-# Helper: Offline AI assistant (no API key required)
+# Helper: offline AI assistant
 # -------------------------
 def offline_assistant_answer(report_md: str, user_q: str) -> str:
     q = user_q.lower().strip()
 
     if "data" in q and ("need" in q or "required" in q):
         return (
-            "For this prototype, each uploaded Excel workbook must contain the 'Budget_Costs' sheet with "
-            "monthly EV, PV, AC, CPI, and SPI (and ProjectID + Month). The app then derives CV, SV, "
-            "CPI/SPI lags and rolling trends, and computes targets for risk level and cost overrun ratio."
+            "For this prototype, each uploaded Excel workbook must contain the "
+            "'Budget_Costs' sheet with monthly EV, PV, AC, CPI, and SPI "
+            "(and ProjectID + Month). The app then derives CV, SV, CPI/SPI "
+            "lags and rolling trends, and computes targets for risk level and "
+            "cost overrun ratio."
         )
+
     if "model" in q and ("which" in q or "used" in q):
         return (
             "The prototype trains 3 models for classification and 3 for regression. "
-            "It automatically selects the best model (by macro-F1 for classification and lowest RMSE for regression) "
-            "using GroupKFold split by ProjectID."
-        )
-    if "pv/bac" in q or "stage" in q:
-        return (
-            "PV/BAC is used as a proxy for planned progress (planned value as a fraction of the baseline budget). "
-            "Filtering PV/BAC creates early/mid/late stage windows to test how early the warning can be made."
-        )
-    if "shap" in q:
-        return (
-            "SHAP explains predictions by showing how each feature pushes the model output up or down. "
-            "Dots to the right increase the predicted risk/overrun; dots to the left decrease it."
-        )
-    if "report" in q:
-        return (
-            "The Report tab generates a structured summary including dataset size, PV/BAC window, model selection, "
-            "GroupKFold metrics, and key explainability notes. You can download it as a Markdown file."
+            "It automatically selects the best model by macro-F1 for classification "
+            "and lowest RMSE for regression using GroupKFold split by ProjectID."
         )
 
-    # fallback
+    if "pv/bac" in q or "stage" in q:
+        return (
+            "PV/BAC is used as a proxy for planned progress "
+            "(planned value as a fraction of the baseline budget). "
+            "Filtering PV/BAC creates early, mid, and late stage windows "
+            "to test how early the warning can be made."
+        )
+
+    if "shap" in q:
+        return (
+            "SHAP explains predictions by showing how each feature pushes "
+            "the model output up or down. Dots to the right increase the "
+            "predicted risk or overrun; dots to the left decrease it."
+        )
+
+    if "report" in q:
+        return (
+            "The Report tab generates a structured summary including dataset size, "
+            "PV/BAC window, model selection, GroupKFold metrics, and key explainability notes. "
+            "You can download it as a Markdown file."
+        )
+
     return (
-        "Tell me exactly what you want to know (e.g., 'Explain Global SHAP classifier' or 'Why AUC is null'), "
-        "and I will answer using the generated report and your current PV/BAC filter."
+        "Tell me exactly what you want to know "
+        "(for example: 'Explain Global SHAP classifier' or 'Why is AUC null?'), "
+        "and I will answer using the generated report and the current PV/BAC filter."
     )
 
 
@@ -164,7 +179,9 @@ def offline_assistant_answer(report_md: str, user_q: str) -> str:
 # -------------------------
 st.set_page_config(page_title="EVM-Guard", layout="wide")
 st.title("EVM-Guard: Explainable EVM + ML Early-Warning Prototype")
-st.caption("Upload SetA_Project*.xlsx files (must include 'Budget_Costs' with EV/PV/AC/CPI/SPI by Month).")
+st.caption(
+    "Upload SetA_Project*.xlsx files (must include 'Budget_Costs' with EV/PV/AC/CPI/SPI by Month)."
+)
 
 # -------------------------
 # Sidebar controls
@@ -172,8 +189,12 @@ st.caption("Upload SetA_Project*.xlsx files (must include 'Budget_Costs' with EV
 st.sidebar.header("Controls")
 progress_filter = st.sidebar.slider(
     "Filter by planned progress (PV/BAC)",
-    0.0, 1.0, (0.0, 1.0), 0.05
+    0.0,
+    1.0,
+    (0.0, 1.0),
+    0.05,
 )
+
 train_now = st.sidebar.button("Train / Retrain Models")
 
 if st.sidebar.button("Clear trained models (force re-train)"):
@@ -185,7 +206,12 @@ if st.sidebar.button("Clear trained models (force re-train)"):
 # -------------------------
 # File upload
 # -------------------------
-uploaded = st.file_uploader("Upload SetA Excel workbooks", type=["xlsx"], accept_multiple_files=True)
+uploaded = st.file_uploader(
+    "Upload SetA Excel workbooks",
+    type=["xlsx"],
+    accept_multiple_files=True,
+)
+
 if not uploaded:
     st.info("Upload your SetA_Project*.xlsx files to begin.")
     st.stop()
@@ -214,14 +240,14 @@ df = add_evm_derived_features(df)
 df = compute_eac_baselines(df)
 df = add_targets(df)
 
-# Apply stage filter
+# Apply stage filter first, then everything else uses filtered data
 df_filtered = df[
     (df["progress_plan_pct"] >= progress_filter[0]) &
     (df["progress_plan_pct"] <= progress_filter[1])
 ].copy()
 
 # -------------------------
-# Tabs (NEW: Report + AI Assistant)
+# Tabs
 # -------------------------
 tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(
     ["Upload/Input", "Predictions", "Explanations", "Charts", "Export", "Report", "AI Assistant"]
@@ -251,7 +277,10 @@ with tab2:
         f"Rows: {len(df_filtered)} | Projects: {df_filtered['ProjectID'].nunique()}"
     )
 
-    train_df = df_filtered.dropna(subset=feature_cols + ["y_risk_level", "y_cost_overrun_ratio"]).copy()
+    train_df = df_filtered.dropna(
+        subset=feature_cols + ["y_risk_level", "y_cost_overrun_ratio"]
+    ).copy()
+
     if train_df.empty:
         st.error("No training rows available after filtering. Widen PV/BAC range or upload more projects.")
         st.stop()
@@ -259,7 +288,6 @@ with tab2:
     st.markdown("### Target distribution (y_risk_level)")
     st.write(train_df["y_risk_level"].value_counts(dropna=False))
 
-    # Train (3-model comparison handled inside train_models)
     if train_now or ("models" not in st.session_state):
         with st.spinner("Training 3 candidate models (GroupKFold by ProjectID where possible)..."):
             st.session_state["models"] = train_models(train_df, feature_cols)
@@ -269,7 +297,6 @@ with tab2:
     st.markdown("### Cross-validated metrics (GroupKFold by ProjectID)")
     st.json(models.metrics)
 
-    # Optional selector: which model to use for predictions (default is selected best)
     clf_choices = list(models.clf_candidates.keys())
     reg_choices = list(models.reg_candidates.keys())
     default_clf = models.metrics.get("selected_models", {}).get("classifier", clf_choices[0])
@@ -277,9 +304,17 @@ with tab2:
 
     c1, c2 = st.columns(2)
     with c1:
-        chosen_clf_name = st.selectbox("Classifier used for predictions", clf_choices, index=clf_choices.index(default_clf) if default_clf in clf_choices else 0)
+        chosen_clf_name = st.selectbox(
+            "Classifier used for predictions",
+            clf_choices,
+            index=clf_choices.index(default_clf) if default_clf in clf_choices else 0,
+        )
     with c2:
-        chosen_reg_name = st.selectbox("Regressor used for predictions", reg_choices, index=reg_choices.index(default_reg) if default_reg in reg_choices else 0)
+        chosen_reg_name = st.selectbox(
+            "Regressor used for predictions",
+            reg_choices,
+            index=reg_choices.index(default_reg) if default_reg in reg_choices else 0,
+        )
 
     clf_model = models.clf_candidates[chosen_clf_name]
     reg_model = models.reg_candidates[chosen_reg_name]
@@ -288,7 +323,9 @@ with tab2:
     pred_risk = clf_model.predict(X_all)
     pred_overrun = reg_model.predict(X_all)
 
-    pred_df = df_filtered[["ProjectID", "Month", "BAC", "EV", "PV", "AC", "CPI", "SPI", "progress_plan_pct"]].copy()
+    pred_df = df_filtered[
+        ["ProjectID", "Month", "BAC", "EV", "PV", "AC", "CPI", "SPI", "progress_plan_pct"]
+    ].copy()
     pred_df["pred_risk_level"] = pred_risk
     pred_df["pred_cost_overrun_ratio"] = pred_overrun
 
@@ -307,37 +344,55 @@ with tab3:
         st.stop()
 
     feature_cols = get_model_feature_columns(df_filtered)
-    df_mod = df_filtered.dropna(subset=feature_cols + ["y_risk_level", "y_cost_overrun_ratio"]).copy()
+    df_mod = df_filtered.dropna(
+        subset=feature_cols + ["y_risk_level", "y_cost_overrun_ratio"]
+    ).copy()
+
     if df_mod.empty:
         st.warning("No rows available for explainability after filtering. Widen PV/BAC range or upload more projects.")
         st.stop()
 
-    # use selected best models for explanations
-    sel = models.metrics.get("selected_models", {})
-    best_clf_name = sel.get("classifier", list(models.clf_candidates.keys())[0])
-    best_reg_name = sel.get("regressor", list(models.reg_candidates.keys())[0])
-    clf_pipe = models.clf_candidates[best_clf_name]
-    reg_pipe = models.reg_candidates[best_reg_name]
+    # Keep 3-model comparison for predictions,
+    # but force SHAP-compatible tree models for explainability.
+    explain_clf_name = "RandomForestClassifier"
+    explain_reg_name = "RandomForestRegressor"
 
-    st.caption(f"Using best models for explainability: classifier={best_clf_name}, regressor={best_reg_name}")
+    clf_pipe = models.clf_candidates.get(explain_clf_name, list(models.clf_candidates.values())[0])
+    reg_pipe = models.reg_candidates.get(explain_reg_name, list(models.reg_candidates.values())[0])
 
-    # Global permutation importance (works for any sklearn model)
+    st.caption(
+        f"Using SHAP-compatible models for explainability: "
+        f"classifier={explain_clf_name}, regressor={explain_reg_name}"
+    )
+    st.info(
+        "Predictions use the selected best-performing models from 3-model comparison. "
+        "SHAP explanations use Random Forest models to ensure stable global and local tree-based explanations."
+    )
+
+    # Global permutation importance
     c1, c2 = st.columns(2)
     with c1:
         st.markdown("**Global permutation importance — classifier**")
-        imp_clf = global_permutation_importance(clf_pipe, df_mod[feature_cols], df_mod["y_risk_level"])
+        imp_clf = global_permutation_importance(
+            clf_pipe,
+            df_mod[feature_cols],
+            df_mod["y_risk_level"],
+        )
         st.dataframe(imp_clf, use_container_width=True, height=420)
 
     with c2:
         st.markdown("**Global permutation importance — regressor**")
-        imp_reg = global_permutation_importance(reg_pipe, df_mod[feature_cols], df_mod["y_cost_overrun_ratio"])
+        imp_reg = global_permutation_importance(
+            reg_pipe,
+            df_mod[feature_cols],
+            df_mod["y_cost_overrun_ratio"],
+        )
         st.dataframe(imp_reg, use_container_width=True, height=420)
 
     st.divider()
     st.markdown("## SHAP explanations (global + local)")
     st.caption("SHAP is shown only when the model is compatible (tree-based models).")
 
-    # SHAP availability
     try:
         import shap  # type: ignore
         shap_ok = True
@@ -345,10 +400,10 @@ with tab3:
         shap_ok = False
 
     if not shap_ok:
-        st.info("SHAP not available in this environment. (Install with: pip install shap)")
+        st.info("SHAP not available in this environment. Install with: pip install shap")
         st.stop()
 
-    # Global SHAP — classifier (tree only)
+    # Global SHAP — classifier
     st.markdown("### Global SHAP — Classifier (risk level)")
     class_options = ["Low", "Medium", "High"]
     class_selected = st.selectbox("Select class to explain (multiclass)", class_options, index=2)
@@ -362,15 +417,23 @@ with tab3:
     )
 
     if shap_clf is None:
-        st.warning("Classifier SHAP could not be computed for the selected model (not tree-based or incompatible).")
+        st.warning("Classifier SHAP could not be computed for the selected explanation model.")
     else:
-        st.write(f"SHAP enabled for: {shap_clf['model_type']} | Class explained: {shap_clf.get('class_selected')}")
+        st.write(
+            f"SHAP enabled for: {shap_clf['model_type']} | "
+            f"Class explained: {shap_clf.get('class_selected')}"
+        )
         feature_names_np = np.array(shap_clf["feature_names"])
         fig = plt.figure()
-        shap.summary_plot(shap_clf["shap_values"], shap_clf["X_trans"], feature_names=feature_names_np, show=False)
+        shap.summary_plot(
+            shap_clf["shap_values"],
+            shap_clf["X_trans"],
+            feature_names=feature_names_np,
+            show=False,
+        )
         st.pyplot(fig, clear_figure=True)
 
-    # Global SHAP — regressor (tree only)
+    # Global SHAP — regressor
     st.markdown("### Global SHAP — Regressor (cost overrun magnitude)")
     shap_reg = try_shap_global_tree(
         model_pipeline=reg_pipe,
@@ -380,17 +443,25 @@ with tab3:
     )
 
     if shap_reg is None:
-        st.warning("Regressor SHAP could not be computed for the selected model (not tree-based or incompatible).")
+        st.warning("Regressor SHAP could not be computed for the selected explanation model.")
     else:
         st.write(f"SHAP enabled for: {shap_reg['model_type']}")
         feature_names_np = np.array(shap_reg["feature_names"])
         fig = plt.figure()
-        shap.summary_plot(shap_reg["shap_values"], shap_reg["X_trans"], feature_names=feature_names_np, show=False)
+        shap.summary_plot(
+            shap_reg["shap_values"],
+            shap_reg["X_trans"],
+            feature_names=feature_names_np,
+            show=False,
+        )
         st.pyplot(fig, clear_figure=True)
 
-    # Local SHAP
+    # Local explanation
     st.markdown("### Local explanation — select a project-month")
-    pid = st.selectbox("ProjectID for local explanation", sorted(df_mod["ProjectID"].unique().tolist()))
+    pid = st.selectbox(
+        "ProjectID for local explanation",
+        sorted(df_mod["ProjectID"].unique().tolist()),
+    )
     pdf = df_mod[df_mod["ProjectID"] == pid].sort_values("Month").reset_index(drop=True)
 
     if pdf.empty:
@@ -405,32 +476,45 @@ with tab3:
 
     row = pdf.iloc[[month_idx]].copy()
 
-    show_cols = [c for c in ["ProjectID", "Month", "EV", "PV", "AC", "CPI", "SPI", "CV", "SV", "progress_plan_pct"] if c in row.columns]
+    show_cols = [
+        c
+        for c in ["ProjectID", "Month", "EV", "PV", "AC", "CPI", "SPI", "CV", "SV", "progress_plan_pct"]
+        if c in row.columns
+    ]
     st.dataframe(row[show_cols], use_container_width=True)
 
     st.markdown("**Local SHAP — Classifier**")
     try:
-        local_clf = try_shap_local_row(clf_pipe, row[feature_cols], task="classifier", class_name=class_selected)
+        local_clf = try_shap_local_row(
+            clf_pipe,
+            row[feature_cols],
+            task="classifier",
+            class_name=class_selected,
+        )
     except Exception as e:
         local_clf = None
-        st.warning(f"Local classifier SHAP could not be computed (shape mismatch). Details: {e}")
+        st.warning(f"Local classifier SHAP could not be computed. Details: {e}")
 
     if local_clf is None:
         st.info("Local classifier SHAP not available for this configuration.")
     else:
-        st.dataframe(local_clf.head(15), use_container_width=True)
+        st.dataframe(local_clf.head(20), use_container_width=True)
 
     st.markdown("**Local SHAP — Regressor**")
     try:
-        local_reg = try_shap_local_row(reg_pipe, row[feature_cols], task="regressor")
+        local_reg = try_shap_local_row(
+            reg_pipe,
+            row[feature_cols],
+            task="regressor",
+        )
     except Exception as e:
         local_reg = None
-        st.warning(f"Local regressor SHAP could not be computed (shape mismatch). Details: {e}")
+        st.warning(f"Local regressor SHAP could not be computed. Details: {e}")
 
     if local_reg is None:
         st.info("Local regressor SHAP not available for this configuration.")
     else:
-        st.dataframe(local_reg.head(15), use_container_width=True)
+        st.dataframe(local_reg.head(20), use_container_width=True)
 
 # -------------------------
 # Tab 4: Charts
@@ -442,7 +526,10 @@ with tab4:
         st.warning("No rows available under the current PV/BAC filter.")
         st.stop()
 
-    pid_chart = st.selectbox("Select project", sorted(df_filtered["ProjectID"].unique().tolist()))
+    pid_chart = st.selectbox(
+        "Select project",
+        sorted(df_filtered["ProjectID"].unique().tolist()),
+    )
     pdfc = df_filtered[df_filtered["ProjectID"] == pid_chart].sort_values("Month")
 
     c1, c2 = st.columns(2)
@@ -498,6 +585,7 @@ with tab5:
     sel = models.metrics.get("selected_models", {})
     clf_name = sel.get("classifier", list(models.clf_candidates.keys())[0])
     reg_name = sel.get("regressor", list(models.reg_candidates.keys())[0])
+
     df_out["pred_risk_level"] = models.clf_candidates[clf_name].predict(X)
     df_out["pred_cost_overrun_ratio"] = models.reg_candidates[reg_name].predict(X)
 
@@ -516,7 +604,7 @@ with tab5:
     )
 
 # -------------------------
-# Tab 6: Report (NEW)
+# Tab 6: Report
 # -------------------------
 with tab6:
     st.subheader("Auto-generated report (insights + findings)")
@@ -532,7 +620,9 @@ with tab6:
         st.stop()
 
     if st.button("Generate / Refresh report"):
-        st.session_state["report_md"] = build_markdown_report(df_filtered, models, feature_cols, progress_filter)
+        st.session_state["report_md"] = build_markdown_report(
+            df_filtered, models, feature_cols, progress_filter
+        )
 
     report_md = st.session_state.get("report_md")
     if not report_md:
@@ -547,7 +637,7 @@ with tab6:
         )
 
 # -------------------------
-# Tab 7: AI Assistant (NEW, offline by default)
+# Tab 7: AI Assistant
 # -------------------------
 with tab7:
     st.subheader("AI Assistant (uses the generated report)")
